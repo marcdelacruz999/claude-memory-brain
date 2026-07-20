@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 
 # Stop hook: reminds the user when the snapshot has gone stale. Never writes.
-python3 -c '
+. "$(dirname "${BASH_SOURCE[0]}")/lib/python.sh"
+mb_resolve_python || exit 0
+
+"$MB_PYTHON" -c '
 import json
 import os
 import stat

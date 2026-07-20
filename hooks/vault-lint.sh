@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 
 # PostToolUse lint is advisory: only opted-in vault Markdown can produce exit 2.
-python3 -c '
+. "$(dirname "${BASH_SOURCE[0]}")/lib/python.sh"
+mb_resolve_python || exit 0
+
+"$MB_PYTHON" -c '
 import datetime
 import json
 import os

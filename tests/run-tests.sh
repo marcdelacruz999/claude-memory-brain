@@ -5,6 +5,15 @@ set -u
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 INJECT="$REPO_ROOT/hooks/inject-snapshot.sh"
 LINT="$REPO_ROOT/hooks/vault-lint.sh"
+
+# Fixtures run through the same resolver as the hooks so the suite works where
+# `python3` is the Windows Store stub.
+. "$REPO_ROOT/hooks/lib/python.sh"
+mb_resolve_python || { echo "RESULT no working python found" >&2; exit 1; }
+# Resolve to an absolute path: naming the wrapper `python3` while MB_PYTHON is
+# also "python3" would make the function call itself.
+MB_PYTHON_BIN=$(command -v "$MB_PYTHON")
+python3() { "$MB_PYTHON_BIN" "$@"; }
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
@@ -75,8 +84,13 @@ json_context_equals() {
 }
 
 json_message_only() {
-  local text=$1
-  python3 -c 'import json,sys; o=json.loads(sys.argv[1]); assert sys.argv[2] in o["systemMessage"]; assert "hookSpecificOutput" not in o' "$OUT" "$text" >/dev/null 2>&1
+  # Every argument must appear in systemMessage; multiple substrings let a
+  # caller assert on a filename without pinning a platform-specific path.
+  python3 -c 'import json,sys
+o = json.loads(sys.argv[1])
+assert "hookSpecificOutput" not in o
+for needle in sys.argv[2:]:
+    assert needle in o["systemMessage"], needle' "$OUT" "$@" >/dev/null 2>&1
 }
 
 json_context_and_message() {
@@ -233,7 +247,9 @@ run_inject "$TEST_ROOT/no-inject-config.json" "$MEMORY"
 assert_case "inject/no config" silent_zero
 
 run_inject "$TEST_ROOT/invalid-config.json" "$MEMORY"
-assert_case "inject/invalid JSON config is observable" json_message_only "config invalid at $TEST_ROOT/invalid-config.json"
+# The hook prints the path as its interpreter sees it, which on Windows is
+# native form rather than the MSYS form this script holds.
+assert_case "inject/invalid JSON config is observable" json_message_only "config invalid at" "invalid-config.json"
 
 MISSING_CONFIG="$TEST_ROOT/missing-snapshot.json"
 make_config "$MISSING_CONFIG" "$VAULT" "$MEMORY/missing.md"
@@ -258,10 +274,20 @@ python3 -c 'import sys; open(sys.argv[1], "wb").write(b"b" * 12000)' "$SNAPSHOT"
 run_inject "$CONFIG" "$MEMORY"
 assert_case "inject/12000-byte hard-cap refusal" json_message_only "exceeds 10,000-byte hard cap"
 
-NON_ASCII=$(python3 -c 'print("é" * 1251, end="")')
-printf '%s' "$NON_ASCII" >"$SNAPSHOT"
+# 1251 two-byte characters = 2502 bytes, one over the target. Written and read
+# back as bytes: routing the text through a shell variable re-encodes it under
+# the console codepage on Windows and the comparison then fails on encoding
+# rather than on the byte-boundary behaviour under test.
+python3 -c 'import sys; open(sys.argv[1], "wb").write("\u00e9".encode("utf-8") * 1251)' "$SNAPSHOT"
 run_inject "$CONFIG" "$MEMORY"
-assert_case "inject/non-ASCII uses UTF-8 byte boundary" json_context_and_message "$NON_ASCII" "over 2,500-byte target"
+non_ascii_roundtrips() {
+  python3 -c 'import json,sys
+o = json.loads(sys.argv[1])
+expected = "\u00e9" * 1251
+assert o["hookSpecificOutput"]["additionalContext"] == expected
+assert "over 2,500-byte target" in o["systemMessage"]' "$OUT" >/dev/null 2>&1
+}
+assert_case "inject/non-ASCII uses UTF-8 byte boundary" non_ascii_roundtrips
 
 python3 -c 'import sys; open(sys.argv[1], "wb").write(b"valid\xffinvalid")' "$SNAPSHOT"
 run_inject "$CONFIG" "$MEMORY"
@@ -270,11 +296,26 @@ assert_case "inject/invalid UTF-8" json_message_only "must be valid UTF-8"
 REAL_SNAPSHOT="$MEMORY/real.md"
 printf '%s' 'real content' >"$REAL_SNAPSHOT"
 SYMLINK_SNAPSHOT="$MEMORY/link.md"
-ln -s "$REAL_SNAPSHOT" "$SYMLINK_SNAPSHOT"
-SYMLINK_CONFIG="$TEST_ROOT/symlink-snapshot.json"
-make_config "$SYMLINK_CONFIG" "$VAULT" "$SYMLINK_SNAPSHOT"
-run_inject "$SYMLINK_CONFIG" "$MEMORY"
-assert_case "inject/symlink snapshot refused" json_message_only "could not be safely opened"
+# `ln -s` silently copies on Windows without developer mode, which would make
+# this assert on a regular file and prove nothing. os.symlink fails loudly.
+SYMLINK_MADE=$(python3 -c 'import os,sys
+try:
+    os.symlink(sys.argv[1], sys.argv[2]); print("yes")
+except OSError:
+    print("no")' "$REAL_SNAPSHOT" "$SYMLINK_SNAPSHOT")
+if [[ "$SYMLINK_MADE" == "yes" ]]; then
+  SYMLINK_CONFIG="$TEST_ROOT/symlink-snapshot.json"
+  make_config "$SYMLINK_CONFIG" "$VAULT" "$SYMLINK_SNAPSHOT"
+  run_inject "$SYMLINK_CONFIG" "$MEMORY"
+  # POSIX refuses via O_NOFOLLOW; Windows lacks that flag and refuses via lstat.
+  symlink_refused() {
+    json_message_only "could not be safely opened" ||
+      json_message_only "not a regular non-symlink file"
+  }
+  assert_case "inject/symlink snapshot refused" symlink_refused
+else
+  printf 'SKIP inject/symlink snapshot refused (symlinks unavailable)\n'
+fi
 
 OUTSIDE_SNAPSHOT="$OUTSIDE/id_rsa"
 printf '%s' 'secret' >"$OUTSIDE_SNAPSHOT"
@@ -369,6 +410,47 @@ assert_case "nudge/non-numeric stale_days is silent" nudge_silent
 
 OUT=$(bash "$NUDGE" --unknown-flag 2>"$TEST_ROOT/nudge.err"); STATUS=$?; ERR=$(<"$TEST_ROOT/nudge.err")
 assert_case "nudge/unknown flag is silent" nudge_silent
+
+resolver_skips_stub() {
+  # A stub that resolves on PATH but exits non-zero when run must be rejected,
+  # not selected. This is the Windows Store `python3` shim's exact behavior.
+  local stub_dir="$TEST_ROOT/stub-bin"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/python3" <<'STUB'
+#!/usr/bin/env bash
+echo "Python was not found" >&2
+exit 49
+STUB
+  chmod +x "$stub_dir/python3"
+  # A real interpreter must exist further down the candidate list, or the
+  # resolver would be failing for lack of any option rather than skipping.
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$MB_PYTHON_BIN" >"$stub_dir/py"
+  chmod +x "$stub_dir/py"
+  local picked
+  picked=$(
+    PATH="$stub_dir:$PATH"
+    . "$REPO_ROOT/hooks/lib/python.sh"
+    unset -f python3 2>/dev/null
+    mb_resolve_python && command -v "$MB_PYTHON"
+  )
+  [[ -n "$picked" && "$picked" != "$stub_dir/python3" ]]
+}
+assert_case "resolver/skips a non-executable python3 stub" resolver_skips_stub
+
+inject_survives_stub_python3() {
+  # End-to-end: the SessionStart hook must still inject when python3 is a stub.
+  # Uses its own fixture; earlier cases leave the shared snapshot invalid.
+  local stub_dir="$TEST_ROOT/stub-bin"
+  local mem="$TEST_ROOT/stub-memory"
+  local cfg="$TEST_ROOT/stub-config.json"
+  mkdir -p "$mem"
+  printf '## Active threads\n\nstub-path fixture\n' >"$mem/snapshot.md"
+  make_config "$cfg" "$VAULT" "$mem/snapshot.md"
+  local out
+  out=$(PATH="$stub_dir:$PATH" bash "$INJECT" --config "$cfg" --snapshot-root "$mem" 2>/dev/null)
+  [[ "$out" == *'"additionalContext"'* ]]
+}
+assert_case "resolver/inject works when python3 is a stub" inject_survives_stub_python3
 
 printf 'RESULT %d passed, %d failed\n' "$passes" "$failures"
 if [[ $failures -ne 0 ]]; then

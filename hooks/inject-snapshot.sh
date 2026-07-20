@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 
 # SessionStart is advisory: every path, parse, and content failure exits 0.
-python3 -c '
+. "$(dirname "${BASH_SOURCE[0]}")/lib/python.sh"
+mb_resolve_python || exit 0
+
+"$MB_PYTHON" -c '
 import errno
 import json
 import os
@@ -66,9 +69,23 @@ def main():
         emit(message="memory-brain: snapshot path is outside the allowed memory directory, not injected")
         return
 
+    # Windows Python defines neither O_NOFOLLOW nor O_NONBLOCK. Where O_NOFOLLOW
+    # exists it refuses a symlink atomically; without it, an lstat check is the
+    # available substitute, and the fstat below still rejects non-regular files.
+    open_flags = os.O_RDONLY
+    for flag_name in ("O_NOFOLLOW", "O_NONBLOCK", "O_BINARY"):
+        open_flags |= getattr(os, flag_name, 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        try:
+            if stat.S_ISLNK(os.lstat(snapshot_path).st_mode):
+                emit(message="memory-brain: snapshot is not a regular non-symlink file, not injected")
+                return
+        except OSError:
+            return
+
     fd = None
     try:
-        fd = os.open(snapshot_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(snapshot_path, open_flags)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             emit(message="memory-brain: snapshot is not a regular non-symlink file, not injected")
             return

@@ -11,7 +11,9 @@ restart Claude Code (or reload plugins)
 /memory-brain:init
 ```
 
-Supported platforms are macOS and Linux. Bash and python3 are required; the init command preflights python3. Windows is not supported in v1.
+Supported platforms are macOS, Linux, and Windows via Git Bash. Bash and Python 3 are required; the init command preflights the interpreter.
+
+On Windows, run Claude Code so its hooks execute under **Git Bash** (`C:\Program Files\Git\bin\bash.exe`). The `bash.exe` in `System32` is the WSL launcher: it runs, but inside Linux, where `$HOME` is the WSL home rather than `C:\Users\<you>`, so the hooks would read a different `.claude` directory than Claude Code writes. The hooks pick an interpreter by executing `python3`, `py`, then `python` in order and taking the first that runs, which skips the Microsoft Store `python3` stub.
 
 ## Laptop 2 quickstart
 

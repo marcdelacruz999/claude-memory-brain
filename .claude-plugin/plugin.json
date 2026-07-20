@@ -1,6 +1,6 @@
 {
   "name": "memory-brain",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Memory brain ecosystem for Claude Code: session snapshot injection + vault frontmatter linting. Tooling only — your content stays yours.",
   "author": { "name": "Marc Dela Cruz", "url": "https://github.com/marcdelacruz999" },
   "hooks": "./hooks/hooks.json"
