@@ -72,17 +72,20 @@ def main():
     if age_days < stale_days:
         return
 
-    print(json.dumps({
-        "systemMessage": "memory-brain: snapshot last updated "
+    # `systemMessage` is NOT in the Stop hook output schema — emitting it here was
+    # a silent no-op. Stop has no non-blocking message channel, and decision:"block"
+    # would force a turn over a cosmetic reminder, so this goes to stderr instead.
+    sys.stderr.write(
+        "memory-brain: snapshot last updated "
         + str(int(age_days))
-        + " days ago — refresh it with /memory-brain:snapshot",
-    }, ensure_ascii=False))
+        + " days ago - refresh it with /memory-brain:snapshot\n"
+    )
 
 
 try:
     main()
 except Exception:
     pass
-' "$@" 2>/dev/null || true
+' "$@" || true
 
 exit 0

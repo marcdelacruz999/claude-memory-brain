@@ -3,6 +3,6 @@
   "description": "Memory brain tooling for Claude Code: session snapshot injection + vault frontmatter linting.",
   "owner": { "name": "Marc Dela Cruz", "url": "https://github.com/marcdelacruz999" },
   "plugins": [
-    { "name": "memory-brain", "source": "./", "description": "Snapshot injection + vault frontmatter linting", "category": "productivity" }
+    { "name": "memory-brain", "source": "./", "description": "Snapshot injection, automatic vault deposits, and frontmatter linting", "category": "productivity" }
   ]
 }

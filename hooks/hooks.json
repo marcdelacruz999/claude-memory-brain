@@ -18,6 +18,7 @@
     "Stop": [
       {
         "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/brain-nudge.sh\"" },
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/snapshot-nudge.sh\"" }
         ]
       }

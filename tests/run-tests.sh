@@ -357,13 +357,11 @@ nudge_silent() {
 
 nudge_message() {
   local needle=$1
-  [[ $STATUS -eq 0 && -z $ERR ]] || return 1
-  python3 -c '
-import json, sys
-payload = json.loads(sys.stdin.read())
-assert set(payload) == {"systemMessage"}, payload
-assert sys.argv[1] in payload["systemMessage"], payload
-' "$needle" <<<"$OUT"
+  # The reminder goes to stderr: `systemMessage` is not in the Stop hook output
+  # schema, and Stop has no other non-blocking channel. Asserting on stdout here
+  # is what let the dead-field version pass for two releases.
+  [[ $STATUS -eq 0 && -z $OUT ]] || return 1
+  [[ $ERR == *"$needle"* ]]
 }
 
 SNAP_MTIME=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime)' "$NUDGE_SNAPSHOT")
@@ -451,6 +449,88 @@ inject_survives_stub_python3() {
   [[ "$out" == *'"additionalContext"'* ]]
 }
 assert_case "resolver/inject works when python3 is a stub" inject_survives_stub_python3
+
+BRAIN="$REPO_ROOT/hooks/brain-nudge.sh"
+BRAIN_ROOT="$TEST_ROOT/brain"
+mkdir -p "$BRAIN_ROOT"
+BRAIN_CONFIG="$TEST_ROOT/brain-config.json"
+make_config "$BRAIN_CONFIG" "$VAULT" "$NUDGE_SNAPSHOT"
+
+# Build a transcript from the file paths given; each becomes one Write tool_use.
+make_transcript() {
+  local out=$1
+  shift
+  : >"$out"
+  local target
+  for target in "$@"; do
+    python3 -c '
+import json, sys
+print(json.dumps({"message": {"content": [
+    {"type": "tool_use", "name": "Write", "input": {"file_path": sys.argv[1]}}
+]}}))
+' "$target" >>"$out"
+  done
+}
+
+run_brain() {
+  local transcript=$1
+  local active=$2
+  local err_file="$TEST_ROOT/brain.err"
+  OUT=$(printf '{"transcript_path": %s, "stop_hook_active": %s}' \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$transcript")" \
+    "$active" |
+    MEMORY_BRAIN_CONFIG="$BRAIN_CONFIG" bash "$BRAIN" 2>"$err_file")
+  STATUS=$?
+  ERR=$(<"$err_file")
+}
+
+brain_silent() {
+  [[ $STATUS -eq 0 && -z $OUT && -z $ERR ]]
+}
+
+brain_blocks() {
+  [[ $STATUS -eq 0 && -z $ERR ]] || return 1
+  python3 -c '
+import json, sys
+payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+assert payload.get("decision") == "block"
+assert payload.get("reason")
+# Non-ASCII must survive the trip to the model: Windows stdout defaults to cp1252
+# and turns the em dash into "?". Assert on the codepoint numerically -- a literal
+# em dash here would itself be mangled, since Windows decodes a `-c` argument with
+# the ANSI codepage rather than UTF-8, and the test would fail on a correct hook.
+assert chr(0x2014) in payload["reason"]
+' <<<"$OUT"
+}
+
+BRAIN_DIRTY="$TEST_ROOT/brain-dirty.jsonl"
+make_transcript "$BRAIN_DIRTY" "$TEST_ROOT/a.py" "$TEST_ROOT/b.py" "$TEST_ROOT/c.py"
+run_brain "$BRAIN_DIRTY" false
+assert_case "brain/three writes without a deposit blocks" brain_blocks
+
+run_brain "$BRAIN_DIRTY" true
+assert_case "brain/stop_hook_active is silent" brain_silent
+
+BRAIN_UNDER="$TEST_ROOT/brain-under.jsonl"
+make_transcript "$BRAIN_UNDER" "$TEST_ROOT/a.py" "$TEST_ROOT/b.py"
+run_brain "$BRAIN_UNDER" false
+assert_case "brain/under the write threshold is silent" brain_silent
+
+BRAIN_DEPOSITED="$TEST_ROOT/brain-deposited.jsonl"
+make_transcript "$BRAIN_DEPOSITED" "$TEST_ROOT/a.py" "$TEST_ROOT/b.py" \
+  "$TEST_ROOT/c.py" "$VAULT/deposited.md"
+run_brain "$BRAIN_DEPOSITED" false
+assert_case "brain/a vault deposit is silent" brain_silent
+
+BRAIN_SNAPSHOTTED="$TEST_ROOT/brain-snapshotted.jsonl"
+make_transcript "$BRAIN_SNAPSHOTTED" "$TEST_ROOT/a.py" "$TEST_ROOT/b.py" \
+  "$TEST_ROOT/c.py" "$NUDGE_SNAPSHOT"
+run_brain "$BRAIN_SNAPSHOTTED" false
+assert_case "brain/a snapshot edit is silent" brain_silent
+
+BRAIN_ABSENT="$TEST_ROOT/brain-absent.jsonl"
+run_brain "$TEST_ROOT/does-not-exist.jsonl" false
+assert_case "brain/an unreadable transcript is silent" brain_silent
 
 printf 'RESULT %d passed, %d failed\n' "$passes" "$failures"
 if [[ $failures -ne 0 ]]; then

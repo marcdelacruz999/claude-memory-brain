@@ -1,6 +1,6 @@
 {
   "name": "memory-brain",
-  "version": "0.1.3",
-  "description": "Memory brain ecosystem for Claude Code: session snapshot injection + vault frontmatter linting. Tooling only — your content stays yours.",
+  "version": "0.1.4",
+  "description": "Memory brain ecosystem for Claude Code: session snapshot injection, automatic end-of-session vault deposits, and vault frontmatter linting. Tooling only — your content stays yours.",
   "author": { "name": "Marc Dela Cruz", "url": "https://github.com/marcdelacruz999" }
 }

@@ -30,7 +30,9 @@ When init asks, point it at the cloned vault directory. Vault synchronization is
 
 ## What it does
 
-The SessionStart hook reads the configured snapshot and injects it as additional Claude context. SessionStart fires on startup, resume, `/clear`, and compaction, so the snapshot is injected at each of those points. Edits made mid-session appear at the next firing; there is no frozen-for-the-session guarantee. A 2,500-byte UTF-8 target keeps it compact, and snapshots over the 10,000-byte hard cap are refused.
+The SessionStart hook reads the configured snapshot and injects it as additional Claude context. SessionStart fires on startup, resume, `/clear`, and compaction, so the snapshot is injected at each of those points. Edits made mid-session appear at the next firing; there is no frozen-for-the-session guarantee. A 4,000-byte UTF-8 target keeps it compact, and snapshots over the 10,000-byte hard cap are refused. The target is a discipline rather than a limit: 4,000 bytes is roughly 1,000 tokens, so going over means something in the snapshot belongs in the vault, not that bytes need shaving.
+
+A second `Stop` hook closes the deposit loop. When a session edited at least three files outside the vault and wrote nothing to the vault or snapshot, it blocks the stop once and hands Claude the `/brain` procedure, so the memory pass happens without anyone remembering to ask. Sessions that deposited something, or that changed less than three files, produce silence — a hook that fires every time is one you train yourself to ignore. `stop_hook_active` guards the loop, so it blocks at most once per turn.
 
 The PostToolUse hook runs after Claude's Write or Edit tool touches a Markdown file under the configured vault. Files opt in when their frontmatter contains a `lifecycle:` line. The hook validates the memory-brain restricted frontmatter contract and returns warn-only model feedback; it never undoes or rewrites a change.
 
@@ -50,7 +52,15 @@ Configuration lives at `~/.claude/memory-brain.json`:
 
 The snapshot is never written automatically — that is the point. The cost of a hand-curated file is that it drifts out of date silently. A `Stop` hook covers that gap: when a session ends and the snapshot has not been modified in `stale_days` days, it prints one reminder to refresh it with `/memory-brain:snapshot`.
 
-It only reads `mtime`. It never writes the snapshot, never proposes content, and never blocks the session. Fresh snapshot, missing snapshot, missing config, or `stale_days: 0` all produce silence.
+It only reads `mtime`. It never writes the snapshot, never proposes content, and never blocks the session — it prints to stderr, which surfaces the reminder without forcing a turn. (The deposit hook is the one that blocks, and only under the conditions above.) Fresh snapshot, missing snapshot, missing config, or `stale_days: 0` all produce silence.
+
+## Commands
+
+- `/memory-brain:init` — write `~/.claude/memory-brain.json` and preflight the interpreter.
+- `/memory-brain:snapshot` — snapshot-only edit, when nothing needs depositing.
+- `/brain` — the full memory pass: deposit durable detail to the vault, index it, then point the snapshot at it. This is what the deposit hook instructs, and what to run by hand at the end of a session that shipped something.
+
+`/brain` reads the vault's own `AGENTS.md` for folder placement rather than assuming a layout, so it works against both the Obsidian-style (`00 Inbox`, `10 Projects`, …) and pipeline-style (`inbox/`, `projects/`, `output/`, `wiki/`) vaults. It never writes to `wiki/` directly.
 
 ## Honest scope
 
@@ -71,11 +81,11 @@ The snapshot's whole purpose is injection into Claude's context. Its contents ar
 
 ## What this plugin deliberately does NOT do
 
-- Automatically write memories or snapshots
+- Automatically write memories or snapshots **itself** — the deposit hook instructs Claude to run the memory pass; every write is Claude's, reviewable in the transcript, and the hook never edits the vault or snapshot directly
 - Couple to claude-mem
 - Build or maintain a graph (graphify)
 - Keep a session ledger
 - Enforce or scan the whole vault
-- Write anything from its Stop hook — the staleness reminder reads `mtime` and prints; it never edits the snapshot
+- Write anything from its Stop hooks — the staleness reminder reads `mtime` and prints; the deposit hook emits an instruction. Neither edits the snapshot or the vault
 - Synchronize the private vault
 - Edit `~/.claude/settings.json`
