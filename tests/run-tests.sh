@@ -292,6 +292,84 @@ make_config "$SPACE_INJECT_CONFIG" "$VAULT" "$SPACE_SNAPSHOT"
 run_inject "$SPACE_INJECT_CONFIG" "$SPACE_MEMORY"
 assert_case "inject/snapshot path with spaces" json_context_equals "space path content"
 
+NUDGE="$REPO_ROOT/hooks/snapshot-nudge.sh"
+NUDGE_MEMORY="$TEST_ROOT/nudge-memory"
+mkdir -p "$NUDGE_MEMORY"
+NUDGE_SNAPSHOT="$NUDGE_MEMORY/snapshot.md"
+printf '%s' 'nudge content' >"$NUDGE_SNAPSHOT"
+NUDGE_CONFIG="$TEST_ROOT/nudge-config.json"
+make_config "$NUDGE_CONFIG" "$VAULT" "$NUDGE_SNAPSHOT"
+
+run_nudge() {
+  local config=$1
+  local root=$2
+  local now=$3
+  local err_file="$TEST_ROOT/nudge.err"
+  OUT=$(bash "$NUDGE" --config "$config" --snapshot-root "$root" --now "$now" 2>"$err_file")
+  STATUS=$?
+  ERR=$(<"$err_file")
+}
+
+nudge_silent() {
+  [[ $STATUS -eq 0 && -z $OUT && -z $ERR ]]
+}
+
+nudge_message() {
+  local needle=$1
+  [[ $STATUS -eq 0 && -z $ERR ]] || return 1
+  python3 -c '
+import json, sys
+payload = json.loads(sys.stdin.read())
+assert set(payload) == {"systemMessage"}, payload
+assert sys.argv[1] in payload["systemMessage"], payload
+' "$needle" <<<"$OUT"
+}
+
+SNAP_MTIME=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime)' "$NUDGE_SNAPSHOT")
+
+run_nudge "$NUDGE_CONFIG" "$NUDGE_MEMORY" "$SNAP_MTIME"
+assert_case "nudge/fresh snapshot is silent" nudge_silent
+
+run_nudge "$NUDGE_CONFIG" "$NUDGE_MEMORY" "$(python3 -c 'import sys; print(float(sys.argv[1]) + 6.9 * 86400)' "$SNAP_MTIME")"
+assert_case "nudge/just under threshold is silent" nudge_silent
+
+run_nudge "$NUDGE_CONFIG" "$NUDGE_MEMORY" "$(python3 -c 'import sys; print(float(sys.argv[1]) + 9 * 86400)' "$SNAP_MTIME")"
+assert_case "nudge/stale snapshot warns" nudge_message "9 days ago"
+
+run_nudge "$TEST_ROOT/nudge-absent.json" "$NUDGE_MEMORY" "$SNAP_MTIME"
+assert_case "nudge/no config is silent" nudge_silent
+
+NUDGE_INVALID_CONFIG="$TEST_ROOT/nudge-invalid.json"
+printf '%s' 'not json' >"$NUDGE_INVALID_CONFIG"
+run_nudge "$NUDGE_INVALID_CONFIG" "$NUDGE_MEMORY" "$SNAP_MTIME"
+assert_case "nudge/invalid config is silent" nudge_silent
+
+NUDGE_MISSING_CONFIG="$TEST_ROOT/nudge-missing.json"
+make_config "$NUDGE_MISSING_CONFIG" "$VAULT" "$NUDGE_MEMORY/absent.md"
+run_nudge "$NUDGE_MISSING_CONFIG" "$NUDGE_MEMORY" "$SNAP_MTIME"
+assert_case "nudge/missing snapshot is silent" nudge_silent
+
+run_nudge "$OUTSIDE_CONFIG" "$NUDGE_MEMORY" "$(python3 -c 'import sys; print(float(sys.argv[1]) + 400 * 86400)' "$SNAP_MTIME")"
+assert_case "nudge/snapshot outside allowed root is silent" nudge_silent
+
+NUDGE_OFF_CONFIG="$TEST_ROOT/nudge-off.json"
+python3 -c 'import json,sys; json.dump({"vault_path":sys.argv[2],"snapshot_path":sys.argv[3],"stale_days":0}, open(sys.argv[1], "w"))' "$NUDGE_OFF_CONFIG" "$VAULT" "$NUDGE_SNAPSHOT"
+run_nudge "$NUDGE_OFF_CONFIG" "$NUDGE_MEMORY" "$(python3 -c 'import sys; print(float(sys.argv[1]) + 400 * 86400)' "$SNAP_MTIME")"
+assert_case "nudge/stale_days 0 disables nudge" nudge_silent
+
+NUDGE_CUSTOM_CONFIG="$TEST_ROOT/nudge-custom.json"
+python3 -c 'import json,sys; json.dump({"vault_path":sys.argv[2],"snapshot_path":sys.argv[3],"stale_days":2}, open(sys.argv[1], "w"))' "$NUDGE_CUSTOM_CONFIG" "$VAULT" "$NUDGE_SNAPSHOT"
+run_nudge "$NUDGE_CUSTOM_CONFIG" "$NUDGE_MEMORY" "$(python3 -c 'import sys; print(float(sys.argv[1]) + 3 * 86400)' "$SNAP_MTIME")"
+assert_case "nudge/custom stale_days honored" nudge_message "3 days ago"
+
+NUDGE_BAD_STALE_CONFIG="$TEST_ROOT/nudge-bad-stale.json"
+python3 -c 'import json,sys; json.dump({"vault_path":sys.argv[2],"snapshot_path":sys.argv[3],"stale_days":"soon"}, open(sys.argv[1], "w"))' "$NUDGE_BAD_STALE_CONFIG" "$VAULT" "$NUDGE_SNAPSHOT"
+run_nudge "$NUDGE_BAD_STALE_CONFIG" "$NUDGE_MEMORY" "$(python3 -c 'import sys; print(float(sys.argv[1]) + 400 * 86400)' "$SNAP_MTIME")"
+assert_case "nudge/non-numeric stale_days is silent" nudge_silent
+
+OUT=$(bash "$NUDGE" --unknown-flag 2>"$TEST_ROOT/nudge.err"); STATUS=$?; ERR=$(<"$TEST_ROOT/nudge.err")
+assert_case "nudge/unknown flag is silent" nudge_silent
+
 printf 'RESULT %d passed, %d failed\n' "$passes" "$failures"
 if [[ $failures -ne 0 ]]; then
   exit 1

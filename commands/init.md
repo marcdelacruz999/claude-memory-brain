@@ -7,7 +7,7 @@ Initialize memory-brain for this machine.
 
 1. Preflight `python3`. If it is unavailable, report that memory-brain requires python3 and stop without writing anything.
 2. Ask the user for the absolute path to their SecondBrain vault. Offer an existing likely directory as the detected default when one is available. Confirm that the chosen path is an existing directory before continuing.
-3. Create `~/.claude/memory/` if needed and write `~/.claude/memory-brain.json` as valid JSON with exactly `vault_path` set to the chosen absolute vault path and `snapshot_path` set to `~/.claude/memory/snapshot.md` expanded to its absolute path.
+3. Create `~/.claude/memory/` if needed and write `~/.claude/memory-brain.json` as valid JSON with exactly `vault_path` set to the chosen absolute vault path, `snapshot_path` set to `~/.claude/memory/snapshot.md` expanded to its absolute path, and `stale_days` set to `7`. Tell the user `stale_days` controls the end-of-session reminder to refresh a drifting snapshot, and that `0` disables it.
 4. Only if `~/.claude/memory/snapshot.md` is absent, create it with this skeleton:
 
    ```markdown

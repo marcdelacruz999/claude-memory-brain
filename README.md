@@ -37,11 +37,18 @@ Configuration lives at `~/.claude/memory-brain.json`:
 ```json
 {
   "vault_path": "/absolute/path/to/SecondBrain",
-  "snapshot_path": "/absolute/path/to/.claude/memory/snapshot.md"
+  "snapshot_path": "/absolute/path/to/.claude/memory/snapshot.md",
+  "stale_days": 7
 }
 ```
 
-`vault_path` is required. `snapshot_path` is optional and defaults to `~/.claude/memory/snapshot.md`; after canonicalization it must remain under `~/.claude/memory/`.
+`vault_path` is required. `snapshot_path` is optional and defaults to `~/.claude/memory/snapshot.md`; after canonicalization it must remain under `~/.claude/memory/`. `stale_days` is optional and defaults to `7`; set it to `0` to silence the staleness reminder entirely.
+
+## Staleness reminder
+
+The snapshot is never written automatically — that is the point. The cost of a hand-curated file is that it drifts out of date silently. A `Stop` hook covers that gap: when a session ends and the snapshot has not been modified in `stale_days` days, it prints one reminder to refresh it with `/memory-brain:snapshot`.
+
+It only reads `mtime`. It never writes the snapshot, never proposes content, and never blocks the session. Fresh snapshot, missing snapshot, missing config, or `stale_days: 0` all produce silence.
 
 ## Honest scope
 
@@ -67,6 +74,6 @@ The snapshot's whole purpose is injection into Claude's context. Its contents ar
 - Build or maintain a graph (graphify)
 - Keep a session ledger
 - Enforce or scan the whole vault
-- Install a Stop hook
+- Write anything from its Stop hook — the staleness reminder reads `mtime` and prints; it never edits the snapshot
 - Synchronize the private vault
 - Edit `~/.claude/settings.json`
